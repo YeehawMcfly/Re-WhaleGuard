@@ -14,13 +14,11 @@ To predict whale presence, the model correlates sightings against specific ocean
 * Bathymetry (Depth): Whales exhibit a strong spatial preference for the 50m to 200m depth range (Tao et al., 2025).
 * Thermal Fronts (SST Gradient): A critical engineered feature. Whales aggregate specifically at thermal fronts where cold and warm waters collide, trapping copepods. The pipeline calculates the spatial gradient magnitude of SST, flagging areas exceeding the 0.035°C/km threshold.
 
-## 3. Data Engineering Methodology: Vectorized Extraction
-Standard point-by-point REST API calls to oceanographic databases (like NOAA ERDDAP) are too slow and fail to capture surrounding frontal contexts. 
-
-Instead, this pipeline utilizes a vectorized NetCDF extraction architecture:
+## 3. Data Engineering Methodology: Hybrid Vectorized Extraction
+Standard point-by-point REST API calls to oceanographic databases (like NOAA ERDDAP) cause severe network bottlenecks. This pipeline utilizes an optimized, hybrid NetCDF extraction architecture:
 1.  Connects directly to remote OPeNDAP endpoints using `xarray`.
-2.  Loads multidimensional satellite grids (e.g., JPL MUR SST) virtually into memory.
-3.  Executes bilinear interpolation (`xarray.interp`) to instantly map the exact environmental pixel value to the spatiotemporal coordinates of the whale.
+2.  Date-Batched Slabs: Groups coordinates by unique dates to fetch minimal spatial bounding boxes, drastically reducing server requests.
+3.  Adaptive Spatial Math: Applies nearest-neighbor selection for ultra-high-resolution data (1km SST, Bathymetry) to preserve computational speed, while utilizing bilinear interpolation for coarse datasets (Chlorophyll, Salinity) to maintain continuous environmental gradients.
 
 ## 4. Addressing Observer Bias: Pseudo-Absences
 A model trained only on visual sightings (Presence = 1) will suffer from severe spatial observer bias (learning where boats look, rather than where whales live). 
@@ -29,5 +27,8 @@ Following Gowan & Ortega-Ortiz (2014), the pipeline generates synthetic "Backgro
 * Temporal Integrity: Background points are generated for the exact same Date as a confirmed sighting, forcing the model to evaluate the specific ocean conditions of that day.
 * Spatial Buffering: Points are randomly scattered within a 300km radius of the sighting, but outside a 15km exclusion buffer to prevent false negatives.
 
-## 5. Machine Learning Architecture
+## 5. Exploratory Data Analysis (EDA) & Literature Validation
+Before model training, statistical distributions of the engineered features are analyzed to confirm ecological validity. Visualizing density plots and correlation matrices of Presence (1) vs. Background (0) allows for direct cross-validation against established baselines. For example, verifying that whales in the dataset statistically aggregate within the 50m-200m bathymetric range and at thermal boundaries exceeding 0.035°C/km validates the extraction pipeline against findings from Tao et al. (2025) and Mosnier et al. (2025).
+
+## 6. Machine Learning Architecture
 As demonstrated by Ji et al. (2024), tree-based ensemble models achieve the highest predictive accuracy for NARW presence. The prepared dataset is fed into an XGBoost / Random Forest classifier. The model utilizes a temporal train/test split to validate its forecasting reliability before deployment.
