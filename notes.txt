@@ -1,0 +1,33 @@
+# Project WhaleGuard: Scientific Pipeline Architecture
+
+## 1. Project Objective & Ecological Context
+Build a dynamic, machine-learning Species Distribution Model (SDM) to predict North Atlantic Right Whale (NARW) presence probabilities in real-time. 
+
+Historically, NARWs foraged in the Gulf of Maine. However, climate-driven ocean regime shifts (Meyer-Gutbrod et al., 2021) warmed these waters, collapsing the local copepod (zooplankton) populations. This forced the whales to migrate into the Gulf of St. Lawrence—a region overlapping with heavy, unregulated maritime supply chains. This model transitions ocean management from static historical maps to dynamic vessel rerouting based on live environmental data.
+
+## 2. Feature Engineering & Variable Correlation
+To predict whale presence, the model correlates sightings against specific oceanographic variables proven to influence NARW movement (Mosnier et al., 2025; Ji et al., 2024; Tao et al., 2025):
+
+* Sea Surface Temperature (SST): Whales do not migrate by the calendar; they follow specific temperature envelopes that dictate prey availability. 
+* Chlorophyll-a: Used as a direct satellite proxy for phytoplankton, which sustains the zooplankton (copepods) that NARWs skim-feed on.
+* Salinity: Variations in surface salinity indicate the meeting of different water masses, which physically concentrate prey.
+* Bathymetry (Depth): Whales exhibit a strong spatial preference for the 50m to 200m depth range (Tao et al., 2025).
+* Thermal Fronts (SST Gradient): A critical engineered feature. Whales aggregate specifically at thermal fronts where cold and warm waters collide, trapping copepods. The pipeline calculates the spatial gradient magnitude of SST, flagging areas exceeding the 0.035°C/km threshold.
+
+## 3. Data Engineering Methodology: Vectorized Extraction
+Standard point-by-point REST API calls to oceanographic databases (like NOAA ERDDAP) are too slow and fail to capture surrounding frontal contexts. 
+
+Instead, this pipeline utilizes a vectorized NetCDF extraction architecture:
+1.  Connects directly to remote OPeNDAP endpoints using `xarray`.
+2.  Loads multidimensional satellite grids (e.g., JPL MUR SST) virtually into memory.
+3.  Executes bilinear interpolation (`xarray.interp`) to instantly map the exact environmental pixel value to the spatiotemporal coordinates of the whale.
+
+## 4. Addressing Observer Bias: Pseudo-Absences
+A model trained only on visual sightings (Presence = 1) will suffer from severe spatial observer bias (learning where boats look, rather than where whales live). 
+
+Following Gowan & Ortega-Ortiz (2014), the pipeline generates synthetic "Background Points" (Presence = 0):
+* Temporal Integrity: Background points are generated for the exact same Date as a confirmed sighting, forcing the model to evaluate the specific ocean conditions of that day.
+* Spatial Buffering: Points are randomly scattered within a 300km radius of the sighting, but outside a 15km exclusion buffer to prevent false negatives.
+
+## 5. Machine Learning Architecture
+As demonstrated by Ji et al. (2024), tree-based ensemble models achieve the highest predictive accuracy for NARW presence. The prepared dataset is fed into an XGBoost / Random Forest classifier. The model utilizes a temporal train/test split to validate its forecasting reliability before deployment.
