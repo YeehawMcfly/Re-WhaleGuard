@@ -340,9 +340,158 @@ print("  XGBoost will exploit for high-accuracy classification.")
 print("=" * 65)"""))
 
 # =====================================================================
-# CELL 6: Correlation Heatmap
+# CELL 6: Month Feature Engineering
 # =====================================================================
-cells.append(md("""### 6 — Multicollinearity Check: Feature Independence
+cells.append(md("""### 6 — Temporal Feature Engineering: Month as a Predictor
+
+NARW habitat use is **profoundly seasonal**. Right whales migrate between calving grounds in the warm Southeast U.S. (Dec–Mar) and foraging grounds in the cold North Atlantic (Jun–Oct). Without a temporal feature, the model cannot distinguish "5°C water in January near Cape Cod" (calving context) from "5°C water in July off Nova Scotia" (foraging context) — two scenarios with identical SST but entirely different ecological meaning.
+
+Every major NARW SDM study includes temporal context. We extract `Month` from the `Date` column as an integer feature (1–12). XGBoost will learn month-dependent split rules (e.g., "if Month > 5 AND SST < 12°C → high whale probability")."""))
+
+cells.append(code("""# ── Add Month Feature ────────────────────────────────────────────────
+df['Month'] = df['Date'].dt.month
+print(f"Added 'Month' column (range: {df['Month'].min()} – {df['Month'].max()})")
+print(f"Updated columns: {', '.join(df.columns)}")
+print(f"\\nMonth value counts:")
+print(df['Month'].value_counts().sort_index().to_string())
+
+# Save updated dataset with Month column
+df.to_csv('data/processed/ML_Whale_Dataset_Engineered_Patched.csv', index=False)
+print(f"\\n✓ Updated CSV saved with Month column")"""))
+
+# =====================================================================
+# CELL 7: Seasonal Sighting Histogram
+# =====================================================================
+cells.append(md("""### 7 — Seasonal Sighting Frequency & Migration Pattern
+
+This histogram reveals the **temporal survey coverage** and the well-documented NARW **migration cycle**. We expect to see:
+- A winter peak (Dec–Mar) corresponding to calving surveys off the Southeast U.S.
+- A spring-summer peak (Apr–Sep) corresponding to foraging surveys in the Gulf of Maine, Bay of Fundy, and Gulf of St. Lawrence.
+
+Any month with very few sightings indicates a **data gap** — the model will have less information about whale behavior in those conditions. This is critical context for interpreting model performance."""))
+
+cells.append(code("""# ── Seasonal Histogram ───────────────────────────────────────────────
+month_names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+
+pres_months = df[df['Presence'] == 1]['Month'].value_counts().sort_index()
+abs_months  = df[df['Presence'] == 0]['Month'].value_counts().sort_index()
+
+fig, ax = plt.subplots(figsize=(12, 6))
+
+x = np.arange(1, 13)
+width = 0.35
+
+bars1 = ax.bar(x - width/2, [pres_months.get(m, 0) for m in range(1, 13)],
+               width, color=PALETTE['presence'], edgecolor='#30363d',
+               linewidth=1, label='Presence', alpha=0.9)
+bars2 = ax.bar(x + width/2, [abs_months.get(m, 0) for m in range(1, 13)],
+               width, color=PALETTE['absence'], edgecolor='#30363d',
+               linewidth=1, label='Absence', alpha=0.7)
+
+ax.set_xlabel('Month', fontsize=13)
+ax.set_ylabel('Number of Records', fontsize=13)
+ax.set_title('Seasonal Sighting Frequency — NARW Migration Cycle\\n'
+             'Reveals temporal survey coverage and calving vs. foraging periods',
+             fontsize=14, pad=15)
+ax.set_xticks(x)
+ax.set_xticklabels(month_names, fontsize=11)
+ax.legend(fontsize=12, framealpha=0.9,
+          facecolor='#161b22', edgecolor='#30363d', labelcolor='#c9d1d9')
+ax.grid(axis='y', alpha=0.2)
+
+# Add count labels on presence bars
+for bar in bars1:
+    h = bar.get_height()
+    if h > 0:
+        ax.text(bar.get_x() + bar.get_width()/2, h + 30,
+                f'{int(h):,}', ha='center', va='bottom', fontsize=9,
+                color='#c9d1d9', fontweight='bold')
+
+fig.tight_layout()
+fig.savefig(IMG_DIR / 'seasonal_histogram.png', dpi=200, bbox_inches='tight')
+plt.show()
+print(f"✓ Saved: {IMG_DIR / 'seasonal_histogram.png'}")
+
+# Print peak months
+peak = pres_months.idxmax()
+print(f"\\nPeak sighting month: {month_names[peak-1]} ({pres_months[peak]:,} sightings)")
+print(f"Lowest sighting month: {month_names[pres_months.idxmin()-1]} ({pres_months.min():,} sightings)")"""))
+
+# =====================================================================
+# CELL 8: Mann-Whitney U Statistical Tests
+# =====================================================================
+cells.append(md("""### 8 — Mann-Whitney U Tests: Statistical Validation of Feature Discrimination
+
+Visual KDE overlap can be misleading. The **Mann-Whitney U test** (non-parametric) quantifies whether two distributions are statistically significantly different, without assuming normality. For each environmental feature, we test:
+
+**H₀:** The distribution of Feature X is identical for Presence=1 and Presence=0.
+**H₁:** The distributions differ.
+
+A p-value < 0.05 means the distributions are significantly different — the feature carries discriminative information. The **effect size (rank-biserial correlation)** tells us *how different* they are:
+- |r| < 0.1 → negligible
+- |r| 0.1–0.3 → small
+- |r| 0.3–0.5 → medium
+- |r| > 0.5 → large"""))
+
+cells.append(code("""# ── Mann-Whitney U Tests ─────────────────────────────────────────────
+from scipy.stats import mannwhitneyu
+
+test_features = ['SST', 'Chlorophyll', 'Salinity', 'Bathymetry', 'SST_Gradient']
+
+pres_df = df[df['Presence'] == 1]
+abs_df  = df[df['Presence'] == 0]
+
+print("=" * 75)
+print("  MANN-WHITNEY U TESTS — Feature Discrimination Significance")
+print("=" * 75)
+print(f"  {'Feature':15s} {'U-statistic':>14s} {'p-value':>12s} {'Effect (r)':>12s} {'Strength':>12s}")
+print("-" * 75)
+
+results = []
+for feat in test_features:
+    p_vals = pres_df[feat].dropna().values
+    a_vals = abs_df[feat].dropna().values
+
+    if len(p_vals) < 10 or len(a_vals) < 10:
+        print(f"  {feat:15s} — insufficient data —")
+        continue
+
+    u_stat, p_val = mannwhitneyu(p_vals, a_vals, alternative='two-sided')
+
+    # Rank-biserial correlation (effect size)
+    n1, n2 = len(p_vals), len(a_vals)
+    r = 1 - (2 * u_stat) / (n1 * n2)
+
+    if abs(r) >= 0.5:
+        strength = "LARGE ⭐"
+    elif abs(r) >= 0.3:
+        strength = "MEDIUM"
+    elif abs(r) >= 0.1:
+        strength = "SMALL"
+    else:
+        strength = "negligible"
+
+    sig = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else "ns"
+
+    print(f"  {feat:15s} {u_stat:>14,.0f} {p_val:>12.2e} {r:>+12.4f} {strength:>12s} {sig}")
+    results.append({'feature': feat, 'r': abs(r), 'p': p_val})
+
+print("-" * 75)
+print("  Significance: *** p<0.001  ** p<0.01  * p<0.05  ns = not significant")
+print("  Effect size:  rank-biserial correlation (r)")
+print("=" * 75)
+
+# Rank features by effect size
+results.sort(key=lambda x: x['r'], reverse=True)
+print("\\n  Feature Ranking by Discriminative Power:")
+for i, r in enumerate(results):
+    bar = '█' * int(r['r'] * 40)
+    print(f"    {i+1}. {r['feature']:15s} |r| = {r['r']:.4f}  {bar}")"""))
+
+# =====================================================================
+# CELL 9: Correlation Heatmap (updated to include Month)
+# =====================================================================
+cells.append(md("""### 9 — Multicollinearity Check: Feature Independence
 
 Before feeding features into a tree-based model, we must verify they are not excessively correlated. High multicollinearity (|r| > 0.85) between features can:
 - Inflate feature importance scores
@@ -352,7 +501,7 @@ Before feeding features into a tree-based model, we must verify they are not exc
 While XGBoost is more robust to collinearity than linear models, documenting feature independence strengthens the scientific defensibility of the model."""))
 
 cells.append(code("""# ── Correlation Heatmap ──────────────────────────────────────────────
-corr_cols = ['SST', 'Chlorophyll', 'Salinity', 'Bathymetry', 'SST_Gradient']
+corr_cols = ['SST', 'Chlorophyll', 'Salinity', 'Bathymetry', 'SST_Gradient', 'Month']
 corr_matrix = df[corr_cols].corr()
 
 fig, ax = plt.subplots(figsize=(9, 7))
