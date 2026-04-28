@@ -1,0 +1,8 @@
+# NARW Habitat Model — Optimal Classification Threshold
+# Optimised for Recall >= 80% (endangered species management)
+# Generated: 2026-04-28T09:55:21.448763
+threshold=0.171804
+recall=0.800230
+precision=0.420386
+f1=0.551206
+auc=0.880496

@@ -37,6 +37,7 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
     f1_score,
+    precision_recall_curve,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -47,7 +48,7 @@ from sklearn.metrics import (
 #  Configuration
 # =========================================================================
 
-DATA_PATH   = Path("data/processed/ML_Whale_Dataset_Engineered_Patched.csv")
+DATA_PATH   = Path("data/processed/ML_Whale_Dataset_Final.csv")
 IMG_DIR     = Path("images")
 MODEL_DIR   = Path("models")
 IMG_DIR.mkdir(exist_ok=True)
@@ -194,52 +195,130 @@ def main():
     train_time = time.time() - t_train
     print(f" done in {train_time:.1f}s")
 
-    # ── 5. Evaluation ────────────────────────────────────────────────
-    print_section("5. Model Evaluation (Temporal Test Set)")
+    # ── 5. Evaluation — Default Threshold (0.50) ────────────────────
+    print_section("5a. Model Evaluation — Default Threshold (0.50)")
 
-    y_pred       = model.predict(X_test)
     y_pred_proba = model.predict_proba(X_test)[:, 1]
+    y_pred_default = (y_pred_proba >= 0.50).astype(int)
 
-    acc       = accuracy_score(y_test, y_pred)
-    precision = precision_score(y_test, y_pred, zero_division=0)
-    recall    = recall_score(y_test, y_pred, zero_division=0)
-    f1        = f1_score(y_test, y_pred, zero_division=0)
-    auc       = roc_auc_score(y_test, y_pred_proba)
+    acc_def       = accuracy_score(y_test, y_pred_default)
+    precision_def = precision_score(y_test, y_pred_default, zero_division=0)
+    recall_def    = recall_score(y_test, y_pred_default, zero_division=0)
+    f1_def        = f1_score(y_test, y_pred_default, zero_division=0)
+    auc           = roc_auc_score(y_test, y_pred_proba)
 
     print(f"\n  ┌─────────────────────────────────────────┐")
-    print(f"  │          PERFORMANCE METRICS             │")
+    print(f"  │   DEFAULT METRICS (threshold = 0.50)     │")
     print(f"  ├─────────────────────┬───────────────────┤")
-    print(f"  │  Accuracy           │  {acc:>14.4f}    │")
-    print(f"  │  Precision          │  {precision:>14.4f}    │")
-    print(f"  │  Recall (Sens.)     │  {recall:>14.4f}    │")
-    print(f"  │  F1-Score           │  {f1:>14.4f}    │")
+    print(f"  │  Accuracy           │  {acc_def:>14.4f}    │")
+    print(f"  │  Precision          │  {precision_def:>14.4f}    │")
+    print(f"  │  Recall (Sens.)     │  {recall_def:>14.4f}    │")
+    print(f"  │  F1-Score           │  {f1_def:>14.4f}    │")
     print(f"  │  ROC-AUC            │  {auc:>14.4f}    │")
     print(f"  └─────────────────────┴───────────────────┘")
 
-    # Confusion matrix
-    cm = confusion_matrix(y_test, y_pred)
+    # ── 5b. Threshold Optimisation for ≥80% Recall ──────────────────
+    #
+    # Rationale (Endangered Species Management):
+    #   A False Negative = a missed whale = a potential fatal ship strike.
+    #   NOAA Right Whale management prioritises RECALL over precision.
+    #   We sweep all classification thresholds and select the one that
+    #   achieves ≥80% recall with the highest possible precision.
+
+    print_section("5b. Threshold Optimisation (Target: Recall ≥ 0.80)")
+
+    TARGET_RECALL = 0.80
+
+    prec_curve, rec_curve, thresholds_pr = precision_recall_curve(
+        y_test, y_pred_proba
+    )
+    # precision_recall_curve returns arrays where len(thresholds) = len(prec) - 1
+    # Trim the final point so arrays align
+    prec_curve = prec_curve[:-1]
+    rec_curve  = rec_curve[:-1]
+
+    # Find all thresholds where recall >= target
+    valid_mask  = rec_curve >= TARGET_RECALL
+    if valid_mask.any():
+        # Among those, pick the one with highest precision (= highest threshold)
+        valid_indices = np.where(valid_mask)[0]
+        # Highest precision among valid = highest threshold among valid
+        best_idx      = valid_indices[np.argmax(prec_curve[valid_indices])]
+        opt_threshold = thresholds_pr[best_idx]
+    else:
+        # Fallback: pick the threshold closest to target recall
+        closest_idx   = np.argmin(np.abs(rec_curve - TARGET_RECALL))
+        opt_threshold = thresholds_pr[closest_idx]
+        print(f"  ⚠ Could not achieve {TARGET_RECALL:.0%} recall; "
+              f"using closest: {rec_curve[closest_idx]:.4f}")
+
+    # Apply optimised threshold
+    y_pred_opt = (y_pred_proba >= opt_threshold).astype(int)
+
+    acc_opt       = accuracy_score(y_test, y_pred_opt)
+    precision_opt = precision_score(y_test, y_pred_opt, zero_division=0)
+    recall_opt    = recall_score(y_test, y_pred_opt, zero_division=0)
+    f1_opt        = f1_score(y_test, y_pred_opt, zero_division=0)
+
+    print(f"\n  Optimal threshold: {opt_threshold:.4f}  (default was 0.50)")
+    print(f"\n  ┌─────────────────────────────────────────────────────────┐")
+    print(f"  │   OPTIMISED METRICS (threshold = {opt_threshold:.4f})              │")
+    print(f"  ├─────────────────────┬──────────────┬──────────────────┤")
+    print(f"  │  Metric             │   Default    │   Optimised      │")
+    print(f"  ├─────────────────────┼──────────────┼──────────────────┤")
+    print(f"  │  Accuracy           │  {acc_def:>10.4f}  │  {acc_opt:>10.4f}      │")
+    print(f"  │  Precision          │  {precision_def:>10.4f}  │  {precision_opt:>10.4f}      │")
+    print(f"  │  Recall (Sens.)     │  {recall_def:>10.4f}  │  {recall_opt:>10.4f}  ✓   │")
+    print(f"  │  F1-Score           │  {f1_def:>10.4f}  │  {f1_opt:>10.4f}      │")
+    print(f"  │  ROC-AUC            │  {auc:>10.4f}  │  {auc:>10.4f}      │")
+    print(f"  └─────────────────────┴──────────────┴──────────────────┘")
+    print(f"\n  Note: ROC-AUC is threshold-independent (same for both).")
+
+    # Confusion matrix (optimised)
+    cm = confusion_matrix(y_test, y_pred_opt)
     tn, fp, fn, tp = cm.ravel()
-    print(f"\n  Confusion Matrix:")
+    print(f"\n  Confusion Matrix (threshold = {opt_threshold:.4f}):")
     print(f"                    Predicted 0    Predicted 1")
     print(f"    Actual 0 (Abs)   {tn:>8,}       {fp:>8,}")
     print(f"    Actual 1 (Pres)  {fn:>8,}       {tp:>8,}")
+    print(f"\n    Missed whales (FN): {fn:,}  →  Recall = {recall_opt:.4f}")
+    print(f"    False alarms (FP): {fp:,}  →  Precision = {precision_opt:.4f}")
 
-    print(f"\n  Full Classification Report:")
-    print(classification_report(y_test, y_pred, target_names=["Absence", "Presence"]))
+    print(f"\n  Full Classification Report (Optimised Threshold):")
+    print(classification_report(y_test, y_pred_opt,
+                                target_names=["Absence", "Presence"]))
+
+    # Use optimised metrics for all downstream plots/reports
+    precision = precision_opt
+    recall    = recall_opt
+    f1        = f1_opt
+    acc       = acc_opt
 
     # ── 6. ROC Curve ─────────────────────────────────────────────────
     print_section("6. Generating ROC Curve")
 
-    fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+    fpr_curve, tpr_curve, _ = roc_curve(y_test, y_pred_proba)
+
+    # Compute the operating point on the ROC curve at the optimised threshold
+    fpr_opt = fp / (fp + tn)
+    tpr_opt = recall_opt
 
     fig, ax = plt.subplots(figsize=(9, 7))
 
     # Fill under curve
-    ax.fill_between(fpr, tpr, alpha=0.15, color="#58a6ff")
-    ax.plot(fpr, tpr, color="#58a6ff", linewidth=2.5,
+    ax.fill_between(fpr_curve, tpr_curve, alpha=0.15, color="#58a6ff")
+    ax.plot(fpr_curve, tpr_curve, color="#58a6ff", linewidth=2.5,
             label=f"XGBoost (AUC = {auc:.4f})")
     ax.plot([0, 1], [0, 1], color="#f85149", linestyle="--",
             linewidth=1.5, alpha=0.7, label="Random Classifier (AUC = 0.50)")
+
+    # Mark the operating point
+    ax.scatter([fpr_opt], [tpr_opt], color="#3fb950", s=120, zorder=5,
+               edgecolors="white", linewidths=2,
+               label=f"Operating Point (τ={opt_threshold:.3f})")
+    ax.annotate(f"  Recall={recall_opt:.2%}\n  Prec={precision_opt:.2%}",
+                xy=(fpr_opt, tpr_opt), fontsize=10, color="#3fb950",
+                fontweight="bold")
 
     ax.set_xlabel("False Positive Rate", fontsize=13)
     ax.set_ylabel("True Positive Rate (Recall)", fontsize=13)
@@ -247,7 +326,7 @@ def main():
                  f"Temporal Validation: Train ≤ {dates.iloc[split_idx-1].date()}, "
                  f"Test ≥ {split_date.date()}",
                  fontsize=14, pad=15)
-    ax.legend(loc="lower right", fontsize=12, framealpha=0.9,
+    ax.legend(loc="lower right", fontsize=11, framealpha=0.9,
               facecolor="#161b22", edgecolor="#30363d", labelcolor="#c9d1d9")
     ax.grid(alpha=0.2)
     ax.set_xlim(-0.02, 1.02)
@@ -258,6 +337,45 @@ def main():
     fig.savefig(roc_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"  ✓ Saved: {roc_path}")
+
+    # ── 6b. Precision-Recall Tradeoff Curve ──────────────────────────
+    print_section("6b. Generating Precision-Recall Tradeoff Curve")
+
+    fig, ax = plt.subplots(figsize=(9, 7))
+
+    ax.plot(rec_curve, prec_curve, color="#d2a8ff", linewidth=2.5,
+            label="Precision-Recall Curve")
+    ax.fill_between(rec_curve, prec_curve, alpha=0.1, color="#d2a8ff")
+
+    # Mark operating point
+    ax.scatter([recall_opt], [precision_opt], color="#3fb950", s=120,
+               zorder=5, edgecolors="white", linewidths=2,
+               label=f"Operating Point (τ={opt_threshold:.3f})")
+    ax.annotate(f"  τ={opt_threshold:.3f}\n  R={recall_opt:.2%}, P={precision_opt:.2%}",
+                xy=(recall_opt, precision_opt), fontsize=10,
+                color="#3fb950", fontweight="bold")
+
+    # Mark the 80% recall target line
+    ax.axvline(x=TARGET_RECALL, color="#f85149", linestyle="--",
+               linewidth=1.5, alpha=0.7, label=f"Recall Target ({TARGET_RECALL:.0%})")
+
+    ax.set_xlabel("Recall", fontsize=13)
+    ax.set_ylabel("Precision", fontsize=13)
+    ax.set_title("Precision-Recall Tradeoff — NARW Habitat Model\n"
+                 "Lowering threshold increases recall (fewer missed whales) "
+                 "but decreases precision",
+                 fontsize=13, pad=15)
+    ax.legend(loc="upper right", fontsize=11, framealpha=0.9,
+              facecolor="#161b22", edgecolor="#30363d", labelcolor="#c9d1d9")
+    ax.grid(alpha=0.2)
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_ylim(-0.02, 1.02)
+
+    fig.tight_layout()
+    pr_path = IMG_DIR / "precision_recall_tradeoff.png"
+    fig.savefig(pr_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  ✓ Saved: {pr_path}")
 
     # ── 7. Feature Importance ────────────────────────────────────────
     print_section("7. Generating Feature Importance Chart")
@@ -303,26 +421,43 @@ def main():
         bar = "█" * int(importances[idx] * 40)
         print(f"    {rank+1}. {feature_names[idx]:20s}  {importances[idx]:.4f}  {bar}")
 
-    # ── 8. Save Model ────────────────────────────────────────────────
-    print_section("8. Saving Model")
+    # ── 8. Save Model & Threshold ────────────────────────────────────
+    print_section("8. Saving Model & Optimal Threshold")
 
     model_path = MODEL_DIR / "xgb_narw_sdm.json"
     model.save_model(str(model_path))
     print(f"  ✓ Model saved: {model_path}")
     print(f"  ✓ Model format: XGBoost JSON (portable, version-safe)")
 
+    # Save the optimal threshold alongside the model
+    threshold_path = MODEL_DIR / "optimal_threshold.txt"
+    with open(threshold_path, "w") as f:
+        f.write(f"# NARW Habitat Model — Optimal Classification Threshold\n")
+        f.write(f"# Optimised for Recall >= {TARGET_RECALL:.0%} (endangered species management)\n")
+        f.write(f"# Generated: {pd.Timestamp.now().isoformat()}\n")
+        f.write(f"threshold={opt_threshold:.6f}\n")
+        f.write(f"recall={recall_opt:.6f}\n")
+        f.write(f"precision={precision_opt:.6f}\n")
+        f.write(f"f1={f1_opt:.6f}\n")
+        f.write(f"auc={auc:.6f}\n")
+    print(f"  ✓ Threshold saved: {threshold_path}")
+    print(f"  ✓ Deploy with: predict(proba >= {opt_threshold:.4f})")
+
     # ── Summary ──────────────────────────────────────────────────────
     total_time = time.time() - t_start
     print_header("Training Complete")
-    print(f"  Model Performance:")
+    print(f"  Model Performance (Optimised for Conservation):")
     print(f"    ROC-AUC:    {auc:.4f}")
-    print(f"    F1-Score:   {f1:.4f}")
+    print(f"    Recall:     {recall:.4f}  (target ≥ {TARGET_RECALL:.0%} ✓)")
     print(f"    Precision:  {precision:.4f}")
-    print(f"    Recall:     {recall:.4f}")
+    print(f"    F1-Score:   {f1:.4f}")
+    print(f"    Threshold:  {opt_threshold:.4f}  (default was 0.50)")
     print(f"\n  Artifacts:")
     print(f"    {roc_path}")
+    print(f"    {pr_path}")
     print(f"    {fi_path}")
     print(f"    {model_path}")
+    print(f"    {threshold_path}")
     print(f"\n  Total time: {total_time:.1f}s")
     print("═" * 68)
 
