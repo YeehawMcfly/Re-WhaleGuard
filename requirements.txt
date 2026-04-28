@@ -4,3 +4,8 @@ xarray>=2023.1
 netCDF4>=1.6
 scipy>=1.10
 global-land-mask>=1.0
+matplotlib>=3.7
+seaborn>=0.12
+cartopy
+scikit-learn>=1.2
+nbformat>=5.0
